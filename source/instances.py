@@ -2,9 +2,7 @@ import boto3
 import os
 import paramiko
 import time
-from scripts import hadoop_script
-from benchmark import run_benchmark
-from mapReduce import output
+from scripts import SQL_script
 
 class EC2Manager:
     def __init__(self):
@@ -12,7 +10,7 @@ class EC2Manager:
         self.ec2_client = boto3.client('ec2', region_name='us-east-1')
         self.instances_large = []
         self.key_pair_name = 'my_key_pair'
-        self.userData_template = hadoop_script
+        self.userData_template = SQL_script
         self.ssh = paramiko.SSHClient()
 
     def create_key_pair(self):
@@ -91,9 +89,9 @@ class EC2Manager:
     def launch_instances(self, security_group_id):
         self.instances_large = self.ec2.create_instances(
             ImageId='ami-0e86e20dae9224db8',
-            MinCount=1,
-            MaxCount=1,
-            InstanceType='t2.large',
+            MinCount=3,
+            MaxCount=3,
+            InstanceType='t2.micro',
             SecurityGroupIds=[security_group_id],
             KeyName=self.key_pair_name,
             UserData=self.userData_template
@@ -171,9 +169,7 @@ def main():
     vpc_id = ec2_manager.ec2_client.describe_vpcs()["Vpcs"][0]['VpcId']
     security_group = ec2_manager.create_security_group(vpc_id)
     ec2_manager.launch_instances(security_group)
-    run_benchmark()
     ec2_manager.cleanup_resources()
 
 if __name__ == "__main__":
     main()
-    output()

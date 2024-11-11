@@ -1,5 +1,5 @@
 # Setup Hadoop and Spark
-hadoop_script = '''#!/bin/bash
+SQL_script = '''#!/bin/bash
 sudo apt-get update && sudo apt-get upgrade -y
 sudo apt-get install -y python3 python3-pip default-jdk wget scala git 
 
