@@ -1,126 +1,144 @@
 # Setup Hadoop and Spark
 SQL_script = '''#!/bin/bash
 sudo apt-get update && sudo apt-get upgrade -y
-sudo apt-get install -y python3 python3-pip default-jdk wget scala git 
+sudo apt-get install -y python3 python3-pip mysql-server wget unzip
+sudo apt-get install -y sysbench 
 
 cd /home/ubuntu
-wget https://dlcdn.apache.org/hadoop/common/hadoop-3.4.0/hadoop-3.4.0.tar.gz
-wget https://downloads.apache.org/hadoop/common/hadoop-3.4.0/hadoop-3.4.0.tar.gz.sha512
+wget https://downloads.mysql.com/docs/sakila-db.zip
+unzip sakila-db.zip
 
-tar -xzvf hadoop-3.4.0.tar.gz
-sudo mv hadoop-3.4.0 /usr/local/hadoop
+# Start MySQL service
+sudo systemctl start mysql
+sudo systemctl enable mysql
 
-# Configuring Hadoop Java Home
-export HADOOP_HOME=/usr/local/hadoop
-export PATH=$PATH:$HADOOP_HOME/bin:$HADOOP_HOME/sbin
-export JAVA_HOME=$(readlink -f /usr/bin/java | sed "s:/bin/java::")
-export PATH=$PATH:$JAVA_HOME/bin
+ROOT_PASSWORD="SomePassword123"  
 
-# Installing Spark
-wget https://dlcdn.apache.org/spark/spark-3.5.3/spark-3.5.3-bin-hadoop3.tgz
-wget https://downloads.apache.org/spark/spark-3.5.3/spark-3.5.3-bin-hadoop3.tgz.sha512
-tar -xzvf spark-*.tgz
-sudo mv spark-3.5.3-bin-hadoop3 /usr/local/spark
-export SPARK_HOME=/usr/local/spark
-export PATH=$PATH:$SPARK_HOME/bin
+# Automate the mysql_secure_installation steps
+sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH 'mysql_native_password' BY '$ROOT_PASSWORD';"
+sudo mysql -e "DELETE FROM mysql.user WHERE User='';"  # Remove anonymous users
+sudo mysql -e "DROP DATABASE IF EXISTS test;"          # Remove the test database
+sudo mysql -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';"
+sudo mysql -e "UPDATE mysql.user SET Host='localhost' WHERE User='root';"  # Disable remote root login
+sudo mysql -e "FLUSH PRIVILEGES;"                     # Reload privilege tables
 
-# Running wordcount for pg4300.txt on hadoop
-wget https://www.gutenberg.org/cache/epub/4300/pg4300.txt
-{ time /usr/local/hadoop/bin/hadoop jar /usr/local/hadoop/share/hadoop/mapreduce/hadoop-mapreduce-examples-3.4.0.jar wordcount /home/ubuntu/pg4300.txt /home/ubuntu/output > /dev/null; } 2> hadoop_time_exploration.txt
-cat ./output/part-r-00000 > output.txt # ou hadoop fs -cat /output/part-r-00000 > output_4_3_hadoop.txt
 
-# Running wordcount for pg4300.txt on local
-{ time cat pg4300.txt | tr ' ' '\n' | sort | uniq -c > output_4_3_linux.txt; } 2> ubuntu_time_exploration.txt
+# Load the Sakila database into MySQL
+mysql -u root -p"$ROOT_PASSWORD" -e "CREATE DATABASE sakila;"
+mysql -u root -p"$ROOT_PASSWORD" sakila < sakila-db/sakila-schema.sql
+mysql -u root -p"$ROOT_PASSWORD" sakila < sakila-db/sakila-data.sql
 
-# Running wordcount for pg4300.txt on spark
-spark-submit /usr/local/spark/examples/src/main/python/wordcount.py pg4300.txt > output_4_3_spark.txt
-
-# 4.4 Who wins ?
-# mkdir input_4_4
-
-wget https://www.gutenberg.ca/ebooks/buchanj-midwinter/buchanj-midwinter-00-t.txt # buchanj-midwinter-00-t.txt
-wget https://www.gutenberg.ca/ebooks/carman-farhorizons/carman-farhorizons-00-t.txt # carman-farhorizons-00-t.txt
-wget https://www.gutenberg.ca/ebooks/colby-champlain/colby-champlain-00-t.txt # colby-champlain-00-t.txt
-wget https://www.gutenberg.ca/ebooks/cheyneyp-darkbahama/cheyneyp-darkbahama-00-t.txt # cheyneyp-darkbahama-00-t.txt
-wget https://www.gutenberg.ca/ebooks/delamare-bumps/delamare-bumps-00-t.txt # delamare-bumps-00-t.txt
-wget https://www.gutenberg.ca/ebooks/charlesworth-scene/charlesworth-scene-00-t.txt # charlesworth-scene-00-t.txt
-wget https://www.gutenberg.ca/ebooks/delamare-lucy/delamare-lucy-00-t.txt # delamare-lucy-00-t.txt
-wget https://www.gutenberg.ca/ebooks/delamare-myfanwy/delamare-myfanwy-00-t.txt  # delamare-myfanwy-00-t.txt
-wget https://www.gutenberg.ca/ebooks/delamare-penny/delamare-penny-00-t.txt # delamare-penny-00-t.txt
-
-files=(
-    "/home/ubuntu/buchanj-midwinter-00-t.txt"
-    "/home/ubuntu/carman-farhorizons-00-t.txt"
-    "/home/ubuntu/colby-champlain-00-t.txt"
-    "/home/ubuntu/cheyneyp-darkbahama-00-t.txt"
-    "/home/ubuntu/delamare-bumps-00-t.txt"
-    "/home/ubuntu/charlesworth-scene-00-t.txt"
-    "/home/ubuntu/delamare-lucy-00-t.txt"
-    "/home/ubuntu/delamare-myfanwy-00-t.txt"
-    "/home/ubuntu/delamare-penny-00-t.txt"
-)
-
-hadoop_times_file="output_hadoop_times.txt"
-hadoop_output_dir="/home/ubuntu/output"
-hadoop_cmd="/usr/local/hadoop/bin/hadoop jar /usr/local/hadoop/share/hadoop/mapreduce/hadoop-mapreduce-examples-3.4.0.jar wordcount"
-
-spark_times_file="output_spark_times.txt"
-spark_cmd="spark-submit /usr/local/spark/examples/src/main/python/wordcount.py"
-
-touch "$hadoop_times_file"
-
-for file in "${files[@]}"; do
-    for run in {1..3}; do
-        if [ -d "$hadoop_output_dir" ]; then
-            rm -r "$hadoop_output_dir"
-        fi
-        { time $hadoop_cmd "$file" "$hadoop_output_dir" > /dev/null; } 2>> "$hadoop_times_file"
-        { time $spark_cmd "$file" > /dev/null; } 2>> "$spark_times_file"
-    done
-done
+# Run sysbench
+sudo sysbench /usr/share/sysbench/oltp_read_only.lua --mysql-db=sakila --mysql-user="root" --mysql-password="$ROOT_PASSWORD" prepare
+sudo sysbench /usr/share/sysbench/oltp_read_only.lua --mysql-db=sakila --mysql-user="root" --mysql-password="$ROOT_PASSWORD" run > sysbench_output.txt
 '''
 
-# 4.4 Who wins ?
-# Download the following text files from the Gutenberg project
-benchmark_datasets= '''#!/bin/bash
-wget https://www.gutenberg.ca/ebooks/buchanj-midwinter/buchanj-midwinter-00-t.txt # buchanj-midwinter-00-t.txt
-wget https://www.gutenberg.ca/ebooks/carman-farhorizons/carman-farhorizons-00-t.txt # carman-farhorizons-00-t.txt
-wget https://www.gutenberg.ca/ebooks/colby-champlain/colby-champlain-00-t.txt # colby-champlain-00-t.txt
-wget https://www.gutenberg.ca/ebooks/cheyneyp-darkbahama/cheyneyp-darkbahama-00-t.txt # cheyneyp-darkbahama-00-t.txt
-wget https://www.gutenberg.ca/ebooks/delamare-bumps/delamare-bumps-00-t.txt # delamare-bumps-00-t.txt
-wget https://www.gutenberg.ca/ebooks/charlesworth-scene/charlesworth-scene-00-t.txt # charlesworth-scene-00-t.txt
-wget https://www.gutenberg.ca/ebooks/delamare-lucy/delamare-lucy-00-t.txt # delamare-lucy-00-t.txt
-wget https://www.gutenberg.ca/ebooks/delamare-myfanwy/delamare-myfanwy-00-t.txt  # delamare-myfanwy-00-t.txt
-wget https://www.gutenberg.ca/ebooks/delamare-penny/delamare-penny-00-t.txt # delamare-penny-00-t.txt
 
-files=(
-    "/home/ubuntu/buchanj-midwinter-00-t.txt"
-    "/home/ubuntu/carman-farhorizons-00-t.txt"
-    "/home/ubuntu/colby-champlain-00-t.txt"
-    "/home/ubuntu/cheyneyp-darkbahama-00-t.txt"
-    "/home/ubuntu/delamare-bumps-00-t.txt"
-    "/home/ubuntu/charlesworth-scene-00-t.txt"
-    "/home/ubuntu/delamare-lucy-00-t.txt"
-    "/home/ubuntu/delamare-myfanwy-00-t.txt"
-    "/home/ubuntu/delamare-penny-00-t.txt"
-)
+proxy_script = '''#!/bin/bash
 
-hadoop_times_file="output_hadoop_times.txt"
-hadoop_output_dir="/home/ubuntu/output"
-hadoop_cmd="/usr/local/hadoop/bin/hadoop jar /usr/local/hadoop/share/hadoop/mapreduce/hadoop-mapreduce-examples-3.4.0.jar wordcount"
+sudo apt-get update && sudo apt-get upgrade -y
+sudo apt-get install -y python3 python3-pip
+pip3 install fastapi uvicorn mysql-connector-python
 
-spark_times_file="output_spark_times.txt"
-spark_cmd="spark-submit /usr/local/spark/examples/src/main/python/wordcount.py"
+cd /home/ubuntu
 
-touch "$hadoop_times_file"
+# Create the FastAPI application
+cat <<EOF > /home/ubuntu/proxy_app.py
+from fastapi import FastAPI, HTTPException
+import random
+import mysql.connector
+import subprocess
 
-for file in "${files[@]}"; do
-    for run in {1..3}; do
-        if [ -d "$hadoop_output_dir" ]; then
-            rm -r "$hadoop_output_dir"
-        fi
-        { time $hadoop_cmd "$file" "$hadoop_output_dir" > /dev/null; } 2>> "$hadoop_times_file"
-        { time $spark_cmd "$file" > /dev/null; } 2>> "$spark_times_file"
-    done
-done
+app = FastAPI()
+
+# Database credentials and worker nodes
+DB_USER = "root"
+DB_PASSWORD = "YourRootPassword"
+DB_NAME = "sakila"
+
+MANAGER_IP = "MANAGER_IP_PLACEHOLDER"
+WORKER_NODES = ["WORKER1_IP_PLACEHOLDER", "WORKER2_IP_PLACEHOLDER"]
+
+# Function to connect to a MySQL server
+def connect_to_mysql(host):
+    try:
+        connection = mysql.connector.connect(
+            host=host,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME
+        )
+        return connection
+    except mysql.connector.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database connection failed: {e}")
+
+@app.post("/direct-hit")
+def direct_hit_query(query: str):
+    """
+    Directly send all requests to the Manager database.
+    """
+    connection = connect_to_mysql(MANAGER_IP)
+    cursor = connection.cursor()
+    cursor.execute(query)
+    result = cursor.fetchall()
+    connection.close()
+    return {"status": "success", "data": result}
+
+@app.post("/random")
+def random_query(query: str):
+    """
+    Send requests to a randomly selected worker node for reads.
+    """
+    worker_ip = random.choice(WORKER_NODES)
+    connection = connect_to_mysql(worker_ip)
+    cursor = connection.cursor()
+    cursor.execute(query)
+    result = cursor.fetchall()
+    connection.close()
+    return {"status": "success", "worker": worker_ip, "data": result}
+
+@app.post("/ping-based")
+def ping_based_query(query: str):
+    """
+    Send requests to the worker node with the lowest ping time.
+    """
+    best_worker = None
+    lowest_ping = float("inf")
+
+    for worker_ip in WORKER_NODES:
+        try:
+            result = subprocess.run(
+                ["ping", "-c", "1", worker_ip],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            if result.returncode == 0:
+                ping_time = float(result.stdout.split("time=")[-1].split(" ")[0])
+                if ping_time < lowest_ping:
+                    lowest_ping = ping_time
+                    best_worker = worker_ip
+        except Exception as e:
+            print(f"Failed to ping {worker_ip}: {e}")
+
+    if not best_worker:
+        raise HTTPException(status_code=500, detail="No available workers based on ping time.")
+
+    # Send query to the best worker
+    connection = connect_to_mysql(best_worker)
+    cursor = connection.cursor()
+    cursor.execute(query)
+    result = cursor.fetchall()
+    connection.close()
+    return {"status": "success", "worker": best_worker, "data": result}
+EOF
+
+# Replace placeholders with actual database IPs
+sed -i "s/MANAGER_IP_PLACEHOLDER/MANAGER_IP/" /home/ubuntu/proxy_app.py
+sed -i "s/WORKER1_IP_PLACEHOLDER/WORKER1_IP/" /home/ubuntu/proxy_app.py
+sed -i "s/WORKER2_IP_PLACEHOLDER/WORKER2_IP/" /home/ubuntu/proxy_app.py
+
+# Start the FastAPI server
+nohup uvicorn /home/ubuntu/proxy_app:app --host 0.0.0.0 --port 8000 > /home/ubuntu/fastapi.log 2>&1 &
 '''
+

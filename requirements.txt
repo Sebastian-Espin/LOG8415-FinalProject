@@ -8,3 +8,4 @@ aiohttp == 3.10.5
 paramiko == 3.5.0
 numpy == 2.1.2
 matplotlib == 3.9.2
+mysql-connector-python == 9.1.0

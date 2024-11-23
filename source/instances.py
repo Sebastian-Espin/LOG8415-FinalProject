@@ -57,8 +57,8 @@ class EC2Manager:
                         if "finished at" in output:
                             print("User Data script execution completed.")
                             #TODO get outputs scripts and use them for plots
-                            self.get_outputs()
-                            self.ssh.close()
+                            self.get_outputs(instance_ip)
+                            #self.ssh.close()
                             return 
                         print("User Data script is still running. Checking again...")
                         time.sleep(10)
@@ -67,7 +67,7 @@ class EC2Manager:
                         print(f"SSH command execution failed: {ssh_err}")
                         print("Waiting for the connection to come back...")
                         break  # Break to outer loop to try reconnecting
-                self.ssh.close()
+                #self.ssh.close()
                 return
 
             except (paramiko.ssh_exception.NoValidConnectionsError, paramiko.ssh_exception.SSHException) as e:
@@ -77,14 +77,11 @@ class EC2Manager:
                 print(f"An unexpected error occurred: {e}, Retrying...")
                 time.sleep(20)
 
-    def get_outputs(self):
+    def get_outputs(self, instance_ip):
+        local_file_name = f'./source/data/sysbench_output_{instance_ip.replace(".", "_")}.txt'
         scp = paramiko.SFTPClient.from_transport(self.ssh.get_transport())
-        scp.get('/home/ubuntu/hadoop_time_exploration.txt','hadoop_exploration.txt')
-        scp.get('/home/ubuntu/ubuntu_time_exploration.txt','ubuntu_exploration.txt')
-        scp.get('/home/ubuntu/output_hadoop_times.txt', 'output_hadoop.txt')
-        scp.get('/home/ubuntu/output_spark_times.txt', 'output_spark.txt')
+        scp.get('/home/ubuntu/sysbench_output.txt',local_file_name)
         scp.close()
-        
 
     def launch_instances(self, security_group_id):
         self.instances_large = self.ec2.create_instances(
