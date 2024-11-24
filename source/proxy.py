@@ -5,15 +5,13 @@ import subprocess
 
 app = FastAPI()
 
-# Database credentials and worker nodes
 DB_USER = "root"
-DB_PASSWORD = "YourRootPassword"
+DB_PASSWORD = "SomePassword123"
 DB_NAME = "sakila"
 
-MANAGER_IP = "MANAGER_IP_PLACEHOLDER"
-WORKER_NODES = ["WORKER1_IP_PLACEHOLDER", "WORKER2_IP_PLACEHOLDER"]
+MANAGER_IP = "{manager_ip}"
+WORKER_NODES = [{workers_str}]
 
-# Function to connect to a MySQL server
 def connect_to_mysql(host):
     try:
         connection = mysql.connector.connect(
@@ -24,38 +22,29 @@ def connect_to_mysql(host):
         )
         return connection
     except mysql.connector.Error as e:
-        raise HTTPException(status_code=500, detail=f"Database connection failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Database connection failed: {{e}}")
 
 @app.post("/direct-hit")
 def direct_hit_query(query: str):
-    """
-    Directly send all requests to the Manager database.
-    """
     connection = connect_to_mysql(MANAGER_IP)
     cursor = connection.cursor()
     cursor.execute(query)
     result = cursor.fetchall()
     connection.close()
-    return {"status": "success", "data": result}
+    return {{"status": "success", "data": result}}
 
 @app.post("/random")
 def random_query(query: str):
-    """
-    Send requests to a randomly selected worker node for reads.
-    """
     worker_ip = random.choice(WORKER_NODES)
     connection = connect_to_mysql(worker_ip)
     cursor = connection.cursor()
     cursor.execute(query)
     result = cursor.fetchall()
     connection.close()
-    return {"status": "success", "worker": worker_ip, "data": result}
+    return {{"status": "success", "worker": worker_ip, "data": result}}
 
 @app.post("/ping-based")
 def ping_based_query(query: str):
-    """
-    Send requests to the worker node with the lowest ping time.
-    """
     best_worker = None
     lowest_ping = float("inf")
 
@@ -73,15 +62,14 @@ def ping_based_query(query: str):
                     lowest_ping = ping_time
                     best_worker = worker_ip
         except Exception as e:
-            print(f"Failed to ping {worker_ip}: {e}")
+            print(f"Failed to ping {{worker_ip}}: {{e}}")
 
     if not best_worker:
         raise HTTPException(status_code=500, detail="No available workers based on ping time.")
 
-    # Send query to the best worker
     connection = connect_to_mysql(best_worker)
     cursor = connection.cursor()
     cursor.execute(query)
     result = cursor.fetchall()
     connection.close()
-    return {"status": "success", "worker": best_worker, "data": result}
+    return {{"status": "success", "worker": best_worker, "data": result}}
