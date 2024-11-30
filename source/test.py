@@ -1,69 +1,42 @@
-import mysql.connector
-import logging
-import time
+import requests
+from pydantic import BaseModel
+import sys
 
-# Logging configuration
-logging.basicConfig(filename="test_request_logs.log", level=logging.INFO, format='%(asctime)s - %(message)s')
+class QueryRequest(BaseModel):
+    query: str
 
-# Database connection details
-DB_USER = "root"
-DB_PASSWORD = "SomePassword123"
-MANAGER_IP = "3.91.67.156"  # Replace with the actual manager instance IP
+# Replace with the public IP address and port of your manager instance
+MANAGER_PUBLIC_IP = "18.234.42.63"  # e.g., "54.123.45.67"
+MANAGER_PORT = 8000  # The port where the manager's FastAPI app is running
+MANAGER_URL = f"http://{MANAGER_PUBLIC_IP}:{MANAGER_PORT}/execute"
 
-def connect_to_mysql(host):
-    """
-    Connect to MySQL database on the specified host.
-    """
+def send_read_query():
+    query = "SELECT * FROM actor LIMIT 5;"
+    request_payload = QueryRequest(query=query)
     try:
-        connection = mysql.connector.connect(
-            host=host,
-            user=DB_USER,
-            password=DB_PASSWORD,
-        )
-        logging.info(f"Connected to MySQL on {host}.")
-        return connection
-    except mysql.connector.Error as e:
-        logging.error(f"Failed to connect to MySQL: {e}")
-        raise RuntimeError(f"Database connection failed: {e}")
+        response = requests.post(MANAGER_URL, json=request_payload.dict())
+        response.raise_for_status()
+        print("Read Query Response:")
+        print(response.json())
+    except requests.RequestException as exc:
+        print(f"An error occurred: {exc}")
 
-def execute_query(connection, query):
-    """
-    Execute a single query on the provided database connection.
-    """
+def send_write_query():
+    query = "INSERT INTO actor (first_name, last_name, last_update) VALUES ('John', 'Doe', NOW());"
+    request_payload = QueryRequest(query=query)
     try:
-        cursor = connection.cursor()
-        cursor.execute(query)
-        if query.strip().lower().startswith("select"):
-            result = cursor.fetchall()
-            logging.info(f"Query executed successfully: {query}")
-            logging.info(f"Result: {result}")
-        else:
-            connection.commit()
-            logging.info(f"Non-SELECT query executed successfully: {query}")
-    except mysql.connector.Error as e:
-        logging.error(f"MySQL error while executing query: {e}")
-        raise RuntimeError(f"MySQL query failed: {e}")
+        response = requests.post(MANAGER_URL, json=request_payload.dict())
+        response.raise_for_status()
+        print("Write Query Response:")
+        print(response.json())
+    except requests.RequestException as exc:
+        print(f"An error occurred: {exc}")
 
-def run_test_queries():
-    """
-    Run a series of predefined SQL queries to test the database connection and functionality.
-    """
-    logging.info("Starting automated SQL test queries...")
-    queries = [
-        "INSERT INTO sakila.actor (first_name, last_name) VALUES ('John', 'Doe');",
-        "SELECT * FROM sakila.actor;"
-    ]
-
-    try:
-        connection = connect_to_mysql(MANAGER_IP)
-        for query in queries:
-            logging.info(f"Executing query: {query}")
-            execute_query(connection, query)
-            time.sleep(1)  # Pause between queries for clarity in logs
-        connection.close()
-        logging.info("All queries executed successfully.")
-    except Exception as e:
-        logging.error(f"Error during test queries: {e}")
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == 'write':
+        send_write_query()
+    else:
+        send_read_query()
 
 if __name__ == "__main__":
-    run_test_queries()
+    main()

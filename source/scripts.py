@@ -1,7 +1,7 @@
 # Setup scripts for ec2 instances
 SQL_script = '''#!/bin/bash
 sudo apt-get update && sudo apt-get upgrade -y
-sudo apt-get install -y python3 python3-pip mysql-server wget unzip
+sudo apt-get install -y python3 python3-pip python3-venv mysql-server wget unzip
 sudo apt-get install -y sysbench 
 
 cd /home/ubuntu
@@ -40,6 +40,61 @@ mysql -u root -p"$ROOT_PASSWORD" sakila < sakila-db/sakila-data.sql
 # Run sysbench
 sudo sysbench /usr/share/sysbench/oltp_read_only.lua --mysql-db=sakila --mysql-user="root" --mysql-password="$ROOT_PASSWORD" prepare
 sudo sysbench /usr/share/sysbench/oltp_read_only.lua --mysql-db=sakila --mysql-user="root" --mysql-password="$ROOT_PASSWORD" run > sysbench_output.txt
+
+python3 -m venv /home/ubuntu/venv
+source /home/ubuntu/venv/bin/activate
+pip install fastapi uvicorn mysql-connector-python
+
+# Create the FastAPI application
+cat <<EOF > /home/ubuntu/manager_app.py
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import mysql.connector
+
+app = FastAPI()
+
+class QueryRequest(BaseModel):
+    query: str
+
+DB_USER = "root"
+DB_PASSWORD = "SomePassword123"
+DB_NAME = "sakila"
+DB_HOST = "localhost"
+
+def connect_to_mysql():
+    try:
+        connection = mysql.connector.connect(
+            host=DB_HOST,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME
+        )
+        return connection
+    except mysql.connector.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database connection failed: {e}")
+
+@app.post("/execute")
+def execute_query(request: QueryRequest):
+    query = request.query
+    connection = connect_to_mysql()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(query)
+        if query.strip().lower().startswith("select"):
+            result = cursor.fetchall()
+            connection.close()
+            return {"status": "success", "data": result}
+        else:
+            connection.commit()
+            connection.close()
+            return {"status": "success", "message": "Query executed successfully."}
+    except mysql.connector.Error as e:
+        connection.close()
+        raise HTTPException(status_code=400, detail=f"Query failed: {e}")
+EOF
+
+# Start the FastAPI server
+nohup /home/ubuntu/venv/bin/uvicorn manager_app:app --host 0.0.0.0 --port 8000 > /home/ubuntu/fastapi.log 2>&1 &
 '''
 
 
