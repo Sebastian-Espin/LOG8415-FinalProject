@@ -1,9 +1,13 @@
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import random
 import mysql.connector
 import subprocess
 
 app = FastAPI()
+
+class QueryRequest(BaseModel):
+    query: str
 
 DB_USER = "root"
 DB_PASSWORD = "SomePassword123"
@@ -25,7 +29,8 @@ def connect_to_mysql(host):
         raise HTTPException(status_code=500, detail=f"Database connection failed: {{e}}")
 
 @app.post("/direct-hit")
-def direct_hit_query(query: str):
+def direct_hit_query(request: QueryRequest):
+    query = request.query
     connection = connect_to_mysql(MANAGER_IP)
     cursor = connection.cursor()
     cursor.execute(query)

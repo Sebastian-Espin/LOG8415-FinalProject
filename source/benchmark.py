@@ -2,9 +2,9 @@ import requests
 import time
 
 # FastAPI server details
-BASE_URL = "http://<PROXY_IP>:8000"  
+BASE_URL = "http://54.167.4.40:8000"  
 # Benchmark parameters
-NUM_REQUESTS = 1000
+NUM_REQUESTS = 100
 
 # Sample SQL queries
 WRITE_QUERY = "INSERT INTO sakila.actor (first_name, last_name) VALUES ('John', 'Doe');"

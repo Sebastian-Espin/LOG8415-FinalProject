@@ -113,7 +113,8 @@ class EC2Manager:
         for instance in instances:
             instance.wait_until_running()
             instance.reload()
-        
+            
+        print(manager[0].public_ip_address)
         print('Workers and Manager instances created, lauunching proxy and gatekeeper')
         self.launch_proxy_and_gatekeeper(security_group_id, manager[0].public_ip_address, [worker.public_ip_address for worker in workers])
         
@@ -157,6 +158,12 @@ class EC2Manager:
                     'IpProtocol': 'tcp',
                     'FromPort': 22,
                     'ToPort': 22,
+                    'IpRanges': [{'CidrIp': "0.0.0.0/0"}]
+                },
+                {
+                    'IpProtocol': 'tcp',
+                    'FromPort': 3306,
+                    'ToPort': 3306,
                     'IpRanges': [{'CidrIp': "0.0.0.0/0"}]
                 }
             ]

@@ -8,6 +8,18 @@ cd /home/ubuntu
 wget https://downloads.mysql.com/docs/sakila-db.zip
 unzip sakila-db.zip
 
+# Create the MySQL general log file
+sudo touch /var/log/mysql/mysql.log
+sudo chown mysql:mysql /var/log/mysql/mysql.log
+sudo chmod 640 /var/log/mysql/mysql.log
+
+# Configure MySQL general log
+sudo sed -i '/\[mysqld\]/a general_log = 1\ngeneral_log_file = /var/log/mysql/mysql.log' /etc/mysql/mysql.conf.d/mysqld.cnf
+
+# Allow MySQL to listen on all network interfaces
+sudo sed -i '/bind-address/s/^#//g' /etc/mysql/mysql.conf.d/mysqld.cnf
+sudo sed -i '/bind-address/s/127.0.0.1/0.0.0.0/' /etc/mysql/mysql.conf.d/mysqld.cnf
+
 # Start MySQL service
 sudo systemctl start mysql
 sudo systemctl enable mysql
@@ -16,12 +28,9 @@ ROOT_PASSWORD="SomePassword123"
 
 # Automate the mysql_secure_installation steps
 sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH 'mysql_native_password' BY '$ROOT_PASSWORD';"
-sudo mysql -e "DELETE FROM mysql.user WHERE User='';"  # Remove anonymous users
-sudo mysql -e "DROP DATABASE IF EXISTS test;"          # Remove the test database
-sudo mysql -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';"
-sudo mysql -e "UPDATE mysql.user SET Host='localhost' WHERE User='root';"  # Disable remote root login
+sudo mysql -e "CREATE USER 'root'@'%' IDENTIFIED BY '$ROOT_PASSWORD';" # Create a remote root user
+sudo mysql -e "GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;" # Grant privileges for remote access
 sudo mysql -e "FLUSH PRIVILEGES;"                     # Reload privilege tables
-
 
 # Load the Sakila database into MySQL
 mysql -u root -p"$ROOT_PASSWORD" -e "CREATE DATABASE sakila;"
@@ -47,11 +56,15 @@ pip install fastapi uvicorn mysql-connector-python
 # Create the FastAPI application
 cat <<EOF > /home/ubuntu/proxy_app.py
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import random
 import mysql.connector
 import subprocess
 
 app = FastAPI()
+
+class QueryRequest(BaseModel):
+    query: str
 
 DB_USER = "root"
 DB_PASSWORD = "SomePassword123"
@@ -73,7 +86,8 @@ def connect_to_mysql(host):
         raise HTTPException(status_code=500, detail=f"Database connection failed: {{e}}")
 
 @app.post("/direct-hit")
-def direct_hit_query(query: str):
+def direct_hit_query(request: QueryRequest):
+    query = request.query
     connection = connect_to_mysql(MANAGER_IP)
     cursor = connection.cursor()
     cursor.execute(query)
