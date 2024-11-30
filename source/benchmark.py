@@ -1,59 +1,88 @@
-import requests
+import asyncio
+import httpx
 import time
+import argparse
+from pydantic import BaseModel
 
-# FastAPI server details
-BASE_URL = "http://54.167.4.40:8000"  
-# Benchmark parameters
-NUM_REQUESTS = 100
+class QueryRequest(BaseModel):
+    query: str #54.236.239.74
 
-# Sample SQL queries
-WRITE_QUERY = "INSERT INTO sakila.actor (first_name, last_name) VALUES ('John', 'Doe');"
-READ_QUERY = "SELECT * FROM sakila.actor;"
+# Replace with the public IP address and port of your proxy instance
+PROXY_PUBLIC_IP = "3.90.36.169"  # e.g., "54.123.45.67"
+PROXY_PORT = 8000  # The port where the proxy's FastAPI app is running
+PROXY_BASE_URL = f"http://{PROXY_PUBLIC_IP}:{PROXY_PORT}"
 
-def send_request(url, query):
-    """
-    Send a POST request to the specified URL with the given query.
-    """
+ENDPOINTS = ['/direct-hit', '/random', '/ping-based']
+
+async def send_request(client, endpoint, query):
+    url = f"{PROXY_BASE_URL}{endpoint}"
+    request_payload = {"query": query}
     try:
-        response = requests.post(url, json={"query": query})
+        response = await client.post(url, json=request_payload, timeout=10.0)
         response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        print(f"Request failed: {e}")
-        return None
+        return True, response.elapsed.total_seconds()
+    except httpx.RequestError as exc:
+        print(f"An error occurred while requesting {exc.request.url!r}: {exc}")
+        return False, None
+    except httpx.HTTPStatusError as exc:
+        print(f"HTTP error {exc.response.status_code} while requesting {exc.request.url!r}: {exc.response.text}")
+        return False, None
 
-def benchmark(proxy_endpoint, query, num_requests):
-    """
-    Benchmark the specified proxy endpoint with a given query.
-    """
-    start_time = time.time()
-    for i in range(num_requests):
-        response = send_request(f"{BASE_URL}{proxy_endpoint}", query)
-        if i % 100 == 0:  # Log every 100 requests
-            print(f"Request {i + 1}/{num_requests}: {response}")
-    end_time = time.time()
+async def benchmark(endpoint, request_type, num_requests):
+    async with httpx.AsyncClient() as client:
+        tasks = []
+        for i in range(num_requests):
+            if request_type == 'read':
+                query = f"SELECT * FROM actor LIMIT 1 OFFSET {i % 200};"
+            else:  # write
+                query = f"INSERT INTO actor (first_name, last_name, last_update) VALUES ('Test{i}', 'User{i}', NOW());"
+            tasks.append(send_request(client, endpoint, query))
+
+        start_time = time.perf_counter()
+        results = await asyncio.gather(*tasks)
+        end_time = time.perf_counter()
+
+    success_count = sum(1 for success, _ in results if success)
+    failure_count = num_requests - success_count
     total_time = end_time - start_time
-    print(f"Completed {num_requests} requests in {total_time:.2f} seconds.")
-    return total_time
+    avg_time_per_request = total_time / num_requests
+
+    # Collect response times for successful requests
+    response_times = [elapsed for success, elapsed in results if success and elapsed is not None]
+
+    if response_times:
+        min_time = min(response_times)
+        max_time = max(response_times)
+        avg_response_time = sum(response_times) / len(response_times)
+    else:
+        min_time = max_time = avg_response_time = None
+
+    print(f"Benchmark Results for Endpoint {endpoint} ({request_type} requests):")
+    print(f"Total Requests: {num_requests}")
+    print(f"Successful Requests: {success_count}")
+    print(f"Failed Requests: {failure_count}")
+    print(f"Total Time: {total_time:.2f} seconds")
+    print(f"Average Time per Request: {avg_time_per_request:.4f} seconds")
+    if avg_response_time is not None:
+        print(f"Average Response Time: {avg_response_time:.4f} seconds")
+        print(f"Min Response Time: {min_time:.4f} seconds")
+        print(f"Max Response Time: {max_time:.4f} seconds")
+    else:
+        print("No successful responses to calculate response times.")
 
 def main():
-    print("Benchmarking Direct Hit (Writes)...")
-    direct_hit_write_time = benchmark("/direct-hit", WRITE_QUERY, NUM_REQUESTS)
+    parser = argparse.ArgumentParser(description='Benchmark script for proxy.')
+    parser.add_argument('--endpoint', type=str, choices=['direct-hit', 'random', 'ping-based'], default='direct-hit',
+                        help='Proxy endpoint to test.')
+    parser.add_argument('--request_type', type=str, choices=['read', 'write'], default='read',
+                        help='Type of requests to send (read or write).')
+    parser.add_argument('--num_requests', type=int, default=1000,
+                        help='Number of requests to send.')
+    args = parser.parse_args()
 
-    print("\nBenchmarking Direct Hit (Reads)...")
-    direct_hit_read_time = benchmark("/direct-hit", READ_QUERY, NUM_REQUESTS)
+    endpoint = f"/{args.endpoint}"
+    asyncio.run(benchmark(endpoint, args.request_type, args.num_requests))
 
-    print("\nBenchmarking Random Proxy (Reads)...")
-    random_proxy_time = benchmark("/random", READ_QUERY, NUM_REQUESTS)
-
-    print("\nBenchmarking Ping-Based Proxy (Reads)...")
-    ping_based_time = benchmark("/ping-based", READ_QUERY, NUM_REQUESTS)
-
-    print("\nBenchmark Results:")
-    print(f"Direct Hit (Writes): {direct_hit_write_time:.2f} seconds")
-    print(f"Direct Hit (Reads): {direct_hit_read_time:.2f} seconds")
-    print(f"Random Proxy (Reads): {random_proxy_time:.2f} seconds")
-    print(f"Ping-Based Proxy (Reads): {ping_based_time:.2f} seconds")
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
+

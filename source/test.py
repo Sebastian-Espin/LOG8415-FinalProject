@@ -6,7 +6,7 @@ class QueryRequest(BaseModel):
     query: str
 
 # Replace with the public IP address and port of your manager instance
-MANAGER_PUBLIC_IP = "18.234.42.63"  # e.g., "54.123.45.67"
+MANAGER_PUBLIC_IP = ""  # e.g., "54.123.45.67"
 MANAGER_PORT = 8000  # The port where the manager's FastAPI app is running
 MANAGER_URL = f"http://{MANAGER_PUBLIC_IP}:{MANAGER_PORT}/execute"
 

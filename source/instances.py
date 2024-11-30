@@ -136,6 +136,7 @@ class EC2Manager:
         )
         proxy_instance[0].wait_until_running()
         proxy_instance[0].reload()
+        print(proxy_instance[0].public_ip_address)
     
     def create_security_group(self, vpc_id):
         response = self.ec2.create_security_group(
