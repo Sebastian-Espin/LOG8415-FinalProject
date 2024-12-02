@@ -2,14 +2,14 @@ import boto3
 import os
 import paramiko
 import time
-from scripts import SQL_script, update_proxy_script
+from scripts import worker_script, update_manager_script, update_proxy_script
 
 class EC2Manager:
     def __init__(self):
         self.ec2 = boto3.resource('ec2', region_name='us-east-1')
         self.ec2_client = boto3.client('ec2', region_name='us-east-1')
         self.key_pair_name = 'my_key_pair'
-        self.userData_template = SQL_script
+        self.userData_template = worker_script
         self.ssh = paramiko.SSHClient()
 
     def create_key_pair(self):
@@ -83,19 +83,6 @@ class EC2Manager:
         scp.close()
 
     def launch_instances(self, security_group_id):
-        manager = self.ec2.create_instances(
-            ImageId='ami-0e86e20dae9224db8',
-            MinCount=1,
-            MaxCount=1,
-            InstanceType='t2.micro',
-            SecurityGroupIds=[security_group_id],
-            KeyName=self.key_pair_name,
-            UserData=self.userData_template,
-            TagSpecifications=[
-            {'ResourceType': 'instance', 'Tags': [{'Key': 'Role', 'Value': 'Manager'}]}
-            ]
-        )
-
         workers = self.ec2.create_instances(
             ImageId='ami-0e86e20dae9224db8',
             MinCount=2,
@@ -109,8 +96,23 @@ class EC2Manager:
             ]
         )
 
-        instances = manager + workers
-        for instance in instances:
+        for worker in workers:
+            worker.wait_until_running()
+            worker.reload()
+        manager_script = update_manager_script([worker.public_ip_address for worker in workers])
+        manager = self.ec2.create_instances(
+                    ImageId='ami-0e86e20dae9224db8',
+                    MinCount=1,
+                    MaxCount=1,
+                    InstanceType='t2.micro',
+                    SecurityGroupIds=[security_group_id],
+                    KeyName=self.key_pair_name,
+                    UserData=manager_script,
+                    TagSpecifications=[
+                    {'ResourceType': 'instance', 'Tags': [{'Key': 'Role', 'Value': 'Manager'}]}
+                    ]
+                )
+        for instance in manager:
             instance.wait_until_running()
             instance.reload()
             
@@ -119,6 +121,7 @@ class EC2Manager:
         self.launch_proxy_and_gatekeeper(security_group_id, manager[0].public_ip_address, [worker.public_ip_address for worker in workers])
         
         print('Proxy and gatekeeper launched, waiting for user data execution')
+        instances = workers + manager
         for instance in instances:
             self.wait_for_userdata_execution(instance.public_ip_address, f"{self.key_pair_name}.pem")           
 
@@ -136,7 +139,6 @@ class EC2Manager:
         )
         proxy_instance[0].wait_until_running()
         proxy_instance[0].reload()
-        print(proxy_instance[0].public_ip_address)
     
     def create_security_group(self, vpc_id):
         response = self.ec2.create_security_group(
@@ -159,12 +161,6 @@ class EC2Manager:
                     'IpProtocol': 'tcp',
                     'FromPort': 22,
                     'ToPort': 22,
-                    'IpRanges': [{'CidrIp': "0.0.0.0/0"}]
-                },
-                {
-                    'IpProtocol': 'tcp',
-                    'FromPort': 3306,
-                    'ToPort': 3306,
                     'IpRanges': [{'CidrIp': "0.0.0.0/0"}]
                 }
             ]

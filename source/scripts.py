@@ -1,5 +1,5 @@
 # Setup scripts for ec2 instances
-SQL_script = '''#!/bin/bash
+worker_script = '''#!/bin/bash
 sudo apt-get update && sudo apt-get upgrade -y
 sudo apt-get install -y python3 python3-pip python3-venv mysql-server wget unzip
 sudo apt-get install -y sysbench 
@@ -9,12 +9,8 @@ wget https://downloads.mysql.com/docs/sakila-db.zip
 unzip sakila-db.zip
 
 # Create the MySQL general log file
-sudo touch /var/log/mysql/mysql.log
-sudo chown mysql:mysql /var/log/mysql/mysql.log
-sudo chmod 640 /var/log/mysql/mysql.log
-
-# Configure MySQL general log
-sudo sed -i '/\[mysqld\]/a general_log = 1\ngeneral_log_file = /var/log/mysql/mysql.log' /etc/mysql/mysql.conf.d/mysqld.cnf
+sudo touch /home/ubuntu/request_log.log
+sudo chmod 666 /home/ubuntu/request_log.log
 
 # Allow MySQL to listen on all network interfaces
 sudo sed -i '/bind-address/s/^#//g' /etc/mysql/mysql.conf.d/mysqld.cnf
@@ -46,10 +42,11 @@ source /home/ubuntu/venv/bin/activate
 pip install fastapi uvicorn mysql-connector-python
 
 # Create the FastAPI application
-cat <<EOF > /home/ubuntu/manager_app.py
-from fastapi import FastAPI, HTTPException
+cat <<EOF > /home/ubuntu/worker_app.py
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 import mysql.connector
+import logging
 
 app = FastAPI()
 
@@ -71,11 +68,34 @@ def connect_to_mysql():
         )
         return connection
     except mysql.connector.Error as e:
+        logging.error(f"Database connection failed: {e}")
         raise HTTPException(status_code=500, detail=f"Database connection failed: {e}")
+
+# Set up basic logging
+logging.basicConfig(
+    filename='/home/ubuntu/request_log.log',  # Path to log file
+    level=logging.INFO,  # Log level
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    # Log request details
+    client_host = request.client.host
+    request_body = await request.body()
+    logging.info(f"Incoming request from {client_host}: {request.method} {request.url} Body: {request_body.decode('utf-8')}")
+    
+    # Process the request
+    response = await call_next(request)
+    
+    # Log response details
+    logging.info(f"Response status: {response.status_code}")
+    return response
 
 @app.post("/execute")
 def execute_query(request: QueryRequest):
     query = request.query
+    logging.info(f"Executing query: {query}")
     connection = connect_to_mysql()
     cursor = connection.cursor()
     try:
@@ -83,19 +103,182 @@ def execute_query(request: QueryRequest):
         if query.strip().lower().startswith("select"):
             result = cursor.fetchall()
             connection.close()
+            logging.info(f"Query result: {result}")
             return {"status": "success", "data": result}
         else:
             connection.commit()
             connection.close()
+            logging.info("Query executed successfully.")
             return {"status": "success", "message": "Query executed successfully."}
     except mysql.connector.Error as e:
         connection.close()
+        logging.error(f"Query failed: {e}")
         raise HTTPException(status_code=400, detail=f"Query failed: {e}")
 EOF
 
 # Start the FastAPI server
+nohup /home/ubuntu/venv/bin/uvicorn worker_app:app --host 0.0.0.0 --port 8000 > /home/ubuntu/fastapi.log 2>&1 &
+'''
+
+
+
+def update_manager_script(worker_ips):
+    workers_str = ', '.join([f'"{ip}"' for ip in worker_ips])
+    manager_script = f'''#!/bin/bash
+sudo apt-get update && sudo apt-get upgrade -y
+sudo apt-get install -y python3 python3-pip python3-venv mysql-server wget unzip
+sudo apt-get install -y sysbench 
+
+cd /home/ubuntu
+wget https://downloads.mysql.com/docs/sakila-db.zip
+unzip sakila-db.zip
+
+# Create the MySQL general log file
+sudo touch /home/ubuntu/request_log.log
+sudo chmod 666 /home/ubuntu/request_log.log
+
+# Allow MySQL to listen on all network interfaces
+sudo sed -i '/bind-address/s/^#//g' /etc/mysql/mysql.conf.d/mysqld.cnf
+sudo sed -i '/bind-address/s/127.0.0.1/0.0.0.0/' /etc/mysql/mysql.conf.d/mysqld.cnf
+
+# Start MySQL service
+sudo systemctl start mysql
+sudo systemctl enable mysql
+
+ROOT_PASSWORD="SomePassword123"  
+
+# Automate the mysql_secure_installation steps
+sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH 'mysql_native_password' BY '$ROOT_PASSWORD';"
+sudo mysql -e "CREATE USER 'root'@'%' IDENTIFIED BY '$ROOT_PASSWORD';" # Create a remote root user
+sudo mysql -e "GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;" # Grant privileges for remote access
+sudo mysql -e "FLUSH PRIVILEGES;"                     # Reload privilege tables
+
+# Load the Sakila database into MySQL
+mysql -u root -p"$ROOT_PASSWORD" -e "CREATE DATABASE sakila;"
+mysql -u root -p"$ROOT_PASSWORD" sakila < sakila-db/sakila-schema.sql
+mysql -u root -p"$ROOT_PASSWORD" sakila < sakila-db/sakila-data.sql
+
+# Run sysbench
+sudo sysbench /usr/share/sysbench/oltp_read_only.lua --mysql-db=sakila --mysql-user="root" --mysql-password="$ROOT_PASSWORD" prepare
+sudo sysbench /usr/share/sysbench/oltp_read_only.lua --mysql-db=sakila --mysql-user="root" --mysql-password="$ROOT_PASSWORD" run > sysbench_output.txt
+
+python3 -m venv /home/ubuntu/venv
+source /home/ubuntu/venv/bin/activate
+pip install fastapi uvicorn mysql-connector-python httpx
+
+# Create the FastAPI application
+cat <<EOF > /home/ubuntu/manager_app.py
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
+import mysql.connector
+import logging
+import httpx
+import asyncio
+
+app = FastAPI()
+
+class QueryRequest(BaseModel):
+    query: str
+
+DB_USER = "root"
+DB_PASSWORD = "SomePassword123"
+DB_NAME = "sakila"
+DB_HOST = "localhost"
+
+# List of worker instance IPs
+WORKER_IPS = [{workers_str}]  # Replace with actual IPs
+WORKER_URLS = [f"http://{{ip}}:8000/execute" for ip in WORKER_IPS]
+
+def connect_to_mysql():
+    try:
+        connection = mysql.connector.connect(
+            host=DB_HOST,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME
+        )
+        return connection
+    except mysql.connector.Error as e:
+        logging.error(f"Database connection failed: {{e}}")
+        raise HTTPException(status_code=500, detail=f"Database connection failed: {{e}}")
+
+# Set up basic logging
+logging.basicConfig(
+    filename='/home/ubuntu/request_log.log',  # Path to log file
+    level=logging.INFO,  # Log level
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    # Log request details
+    client_host = request.client.host
+    request_body = await request.body()
+    logging.info(f"Incoming request from {{client_host}}: {{request.method}} {{request.url}} Body: {{request_body.decode('utf-8')}}")
+    
+    # Process the request
+    response = await call_next(request)
+    
+    # Log response details
+    logging.info(f"Response status: {{response.status_code}}")
+    return response
+
+@app.post("/execute")
+async def execute_query(request: QueryRequest):
+    query = request.query
+    logging.info(f"Executing query: {{query}}")
+    connection = connect_to_mysql()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(query)
+        if query.strip().lower().startswith("select"):
+            result = cursor.fetchall()
+            connection.close()
+            logging.info(f"Query result: {{result}}")
+            return {{"status": "success", "data": result}}
+        else:
+            connection.commit()
+            connection.close()
+            logging.info("Query executed successfully locally.")
+
+            # Forward the write query to all worker instances
+            await forward_write_query_to_workers(query)
+
+            return {{"status": "success", "message": "Query executed successfully on manager and workers."}}
+    except mysql.connector.Error as e:
+        connection.close()
+        logging.error(f"Query failed: {{e}}")
+        raise HTTPException(status_code=400, detail=f"Query failed: {{e}}")
+
+async def forward_write_query_to_workers(query):
+    async with httpx.AsyncClient() as client:
+        tasks = []
+        for url in WORKER_URLS:
+            tasks.append(send_write_query_to_worker(client, url, query))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Log the results of forwarding
+    for worker_url, result in zip(WORKER_URLS, results):
+        if isinstance(result, Exception):
+            logging.error(f"Failed to forward query to {{worker_url}}: {{result}}")
+        else:
+            logging.info(f"Successfully forwarded query to {{worker_url}}")
+
+async def send_write_query_to_worker(client, url, query):
+    request_payload = {{"query": query}}
+    try:
+        response = await client.post(url, json=request_payload, timeout=10.0)
+        response.raise_for_status()
+        return response.json()
+    except httpx.RequestError as exc:
+        raise Exception(f"An error occurred while requesting {{exc.request.url!r}}: {{exc}}") from exc
+    except httpx.HTTPStatusError as exc:
+        raise Exception(f"HTTP error {{exc.response.status_code}} while requesting {{exc.request.url!r}}: {{exc.response.text}}") from exc
+EOF
+
 nohup /home/ubuntu/venv/bin/uvicorn manager_app:app --host 0.0.0.0 --port 8000 > /home/ubuntu/fastapi.log 2>&1 &
 '''
+    return manager_script
 
 
 
@@ -115,6 +298,7 @@ from pydantic import BaseModel
 import random
 import httpx
 import asyncio
+import time
 
 app = FastAPI()
 
@@ -126,10 +310,10 @@ WORKER_NODES = [{workers_str}]
 MANAGER_URL = f"http://{{MANAGER_IP}}:8000/execute"
 WORKER_URLS = [f"http://{{ip}}:8000/execute" for ip in WORKER_NODES]
 
-async def forward_request(url, request: Request):
+async def forward_request(url, request_data):
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=await request.json())
+            response = await client.post(url, json=request_data, timeout=10.0)
             response.raise_for_status()
             return response.json()
     except httpx.RequestError as exc:
@@ -138,54 +322,58 @@ async def forward_request(url, request: Request):
         raise HTTPException(status_code=exc.response.status_code, detail=f"Error from backend: {{exc.response.text}}") from exc
 
 @app.post("/direct-hit")
-async def direct_hit(request: Request):
+async def direct_hit(request: QueryRequest):
     # Forward the request to the manager
-    return await forward_request(MANAGER_URL, request)
+    request_data = request.dict()
+    return await forward_request(MANAGER_URL, request_data)
 
 @app.post("/random")
-async def random_query(request: Request):
+async def random_query(request: QueryRequest):
     # Select a random worker
     worker_url = random.choice(WORKER_URLS)
-    return await forward_request(worker_url, request)
+    request_data = request.dict()
+    return await forward_request(worker_url, request_data)
 
 @app.post("/ping-based")
-async def ping_based_query(request: Request):
-    # Find the worker with the lowest ping
-    best_worker = None
-    lowest_ping = float("inf")
+async def ping_based_endpoint(request: QueryRequest):
+    try:
+        # Measure ping times
+        ping_tasks = {{ip: tcp_ping(ip) for ip in WORKER_NODES}}
+        ping_results = await asyncio.gather(*ping_tasks.values())
+        
+        ping_times = {{}}
+        for ip, result in zip(ping_tasks.keys(), ping_results):
+            if result is not None:
+                ping_times[ip] = result
+            else:
+                # Optionally log unreachable workers
+                pass  # You can add logging here
+        
+        if not ping_times:
+            raise HTTPException(status_code=503, detail="No reachable workers.")
+        
+        # Select the worker with the lowest ping time
+        best_worker_ip = min(ping_times, key=ping_times.get)
+        best_worker_url = f"http://{{best_worker_ip}}:8000/execute"
+        
+        # Prepare the request data
+        request_data = request.dict()
+        
+        # Forward the request to the selected worker
+        result = await forward_request(best_worker_url, request_data)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error in ping-based endpoint: {{e}}")
 
-    ping_tasks = []
-    for ip in WORKER_NODES:
-        ping_tasks.append(get_ping_time(ip))
-
-    ping_times = await asyncio.gather(*ping_tasks)
-
-    for ip, ping_time in zip(WORKER_NODES, ping_times):
-        if ping_time is not None and ping_time < lowest_ping:
-            lowest_ping = ping_time
-            best_worker = ip
-
-    if not best_worker:
-        raise HTTPException(status_code=500, detail="No available workers based on ping time.")
-
-    worker_url = f"http://{{best_worker}}:8000/execute"
-    return await forward_request(worker_url, request)
-
-async def get_ping_time(ip):
-    proc = await asyncio.create_subprocess_exec(
-        'ping', '-c', '1', ip,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode == 0:
-        output = stdout.decode()
-        try:
-            ping_time = float(output.split('time=')[-1].split(' ')[0])
-            return ping_time
-        except (IndexError, ValueError):
-            return None
-    else:
+async def tcp_ping(ip, port=8000, timeout=1):
+    start_time = time.time()
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout)
+        elapsed_time = time.time() - start_time
+        writer.close()
+        await writer.wait_closed()
+        return elapsed_time
+    except Exception:
         return None
 EOF
 

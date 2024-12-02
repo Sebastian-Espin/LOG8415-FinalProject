@@ -5,10 +5,10 @@ import argparse
 from pydantic import BaseModel
 
 class QueryRequest(BaseModel):
-    query: str #54.236.239.74
+    query: str
 
 # Replace with the public IP address and port of your proxy instance
-PROXY_PUBLIC_IP = "3.90.36.169"  # e.g., "54.123.45.67"
+PROXY_PUBLIC_IP = "3.89.116.77"  
 PROXY_PORT = 8000  # The port where the proxy's FastAPI app is running
 PROXY_BASE_URL = f"http://{PROXY_PUBLIC_IP}:{PROXY_PORT}"
 

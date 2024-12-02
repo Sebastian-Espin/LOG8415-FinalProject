@@ -1,42 +1,73 @@
-import requests
-from pydantic import BaseModel
-import sys
+import asyncio
+import httpx
+import time
 
-class QueryRequest(BaseModel):
-    query: str
+WORKER_IPS = ["34.224.21.198", "54.91.194.139"] 
+WORKER_PORT = 8000  
+WORKER_ENDPOINT = "/execute" 
 
-# Replace with the public IP address and port of your manager instance
-MANAGER_PUBLIC_IP = ""  # e.g., "54.123.45.67"
-MANAGER_PORT = 8000  # The port where the manager's FastAPI app is running
-MANAGER_URL = f"http://{MANAGER_PUBLIC_IP}:{MANAGER_PORT}/execute"
+# The SQL query to execute
+QUERY = "SELECT * FROM actor LIMIT 1;"  # Modify the query as needed
 
-def send_read_query():
-    query = "SELECT * FROM actor LIMIT 5;"
-    request_payload = QueryRequest(query=query)
+async def tcp_ping(ip, port=8000, timeout=1):
+    """Asynchronously measure the latency to a given IP and port."""
+    start_time = time.time()
     try:
-        response = requests.post(MANAGER_URL, json=request_payload.dict())
-        response.raise_for_status()
-        print("Read Query Response:")
-        print(response.json())
-    except requests.RequestException as exc:
-        print(f"An error occurred: {exc}")
+        reader, writer = await asyncio.open_connection(ip, port)
+        elapsed_time = time.time() - start_time
+        writer.close()
+        await writer.wait_closed()
+        return elapsed_time
+    except Exception:
+        return None
 
-def send_write_query():
-    query = "INSERT INTO actor (first_name, last_name, last_update) VALUES ('John', 'Doe', NOW());"
-    request_payload = QueryRequest(query=query)
-    try:
-        response = requests.post(MANAGER_URL, json=request_payload.dict())
-        response.raise_for_status()
-        print("Write Query Response:")
-        print(response.json())
-    except requests.RequestException as exc:
-        print(f"An error occurred: {exc}")
+async def get_ping_times(worker_ips):
+    """Ping all workers and return a dictionary of IPs and their ping times."""
+    ping_tasks = {ip: tcp_ping(ip, port=WORKER_PORT) for ip in worker_ips}
+    ping_results = await asyncio.gather(*ping_tasks.values())
 
-def main():
-    if len(sys.argv) > 1 and sys.argv[1] == 'write':
-        send_write_query()
+    ping_times = {}
+    for ip, result in zip(ping_tasks.keys(), ping_results):
+        if result is not None:
+            ping_times[ip] = result
+        else:
+            print(f"Worker {ip} is unreachable or an error occurred.")
+    return ping_times
+
+async def send_request(worker_ip):
+    """Send the SQL query to the selected worker and return the response."""
+    url = f"http://{worker_ip}:{WORKER_PORT}{WORKER_ENDPOINT}"
+    request_data = {"query": QUERY}
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(url, json=request_data, timeout=10.0)
+            response.raise_for_status()
+            return response.json()
+        except httpx.RequestError as exc:
+            print(f"An error occurred while requesting {exc.request.url!r}: {exc}")
+        except httpx.HTTPStatusError as exc:
+            print(f"HTTP error {exc.response.status_code} while requesting {exc.request.url!r}: {exc.response.text}")
+            return None
+
+async def main():
+    # Get ping times to all workers
+    ping_times = await get_ping_times(WORKER_IPS)
+    if not ping_times:
+        print("No reachable workers.")
+        return
+
+    # Select the worker with the lowest ping time
+    best_worker_ip = min(ping_times, key=ping_times.get)
+    print(f"Best worker IP: {best_worker_ip} with ping time {ping_times[best_worker_ip]*1000:.2f} ms")
+
+    # Send the query to the selected worker
+    result = await send_request(best_worker_ip)
+    if result:
+        print("Response from worker:")
+        print(result)
     else:
-        send_read_query()
+        print("Failed to get a response from the worker.")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
+

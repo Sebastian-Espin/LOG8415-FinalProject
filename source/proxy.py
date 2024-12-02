@@ -3,6 +3,7 @@ from pydantic import BaseModel
 import random
 import httpx
 import asyncio
+import time
 
 app = FastAPI()
 
@@ -14,10 +15,10 @@ WORKER_NODES = [{workers_str}]
 MANAGER_URL = f"http://{{MANAGER_IP}}:8000/execute"
 WORKER_URLS = [f"http://{{ip}}:8000/execute" for ip in WORKER_NODES]
 
-async def forward_request(url, request: Request):
+async def forward_request(url, request_data):
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=await request.json())
+            response = await client.post(url, json=request_data, timeout=10.0)
             response.raise_for_status()
             return response.json()
     except httpx.RequestError as exc:
@@ -26,52 +27,56 @@ async def forward_request(url, request: Request):
         raise HTTPException(status_code=exc.response.status_code, detail=f"Error from backend: {{exc.response.text}}") from exc
 
 @app.post("/direct-hit")
-async def direct_hit(request: Request):
+async def direct_hit(request: QueryRequest):
     # Forward the request to the manager
-    return await forward_request(MANAGER_URL, request)
+    request_data = request.dict()
+    return await forward_request(MANAGER_URL, request_data)
 
 @app.post("/random")
-async def random_query(request: Request):
+async def random_query(request: QueryRequest):
     # Select a random worker
     worker_url = random.choice(WORKER_URLS)
-    return await forward_request(worker_url, request)
+    request_data = request.dict()
+    return await forward_request(worker_url, request_data)
 
 @app.post("/ping-based")
-async def ping_based_query(request: Request):
-    # Find the worker with the lowest ping
-    best_worker = None
-    lowest_ping = float("inf")
+async def ping_based_endpoint(request: QueryRequest):
+    try:
+        # Measure ping times
+        ping_tasks = {{ip: tcp_ping(ip) for ip in WORKER_NODES}}
+        ping_results = await asyncio.gather(*ping_tasks.values())
+        
+        ping_times = {{}}
+        for ip, result in zip(ping_tasks.keys(), ping_results):
+            if result is not None:
+                ping_times[ip] = result
+            else:
+                # Optionally log unreachable workers
+                pass  # You can add logging here
+        
+        if not ping_times:
+            raise HTTPException(status_code=503, detail="No reachable workers.")
+        
+        # Select the worker with the lowest ping time
+        best_worker_ip = min(ping_times, key=ping_times.get)
+        best_worker_url = f"http://{{best_worker_ip}}:8000/execute"
+        
+        # Prepare the request data
+        request_data = request.dict()
+        
+        # Forward the request to the selected worker
+        result = await forward_request(best_worker_url, request_data)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error in ping-based endpoint: {{e}}")
 
-    ping_tasks = []
-    for ip in WORKER_NODES:
-        ping_tasks.append(get_ping_time(ip))
-
-    ping_times = await asyncio.gather(*ping_tasks)
-
-    for ip, ping_time in zip(WORKER_NODES, ping_times):
-        if ping_time is not None and ping_time < lowest_ping:
-            lowest_ping = ping_time
-            best_worker = ip
-
-    if not best_worker:
-        raise HTTPException(status_code=500, detail="No available workers based on ping time.")
-
-    worker_url = f"http://{{best_worker}}:8000/execute"
-    return await forward_request(worker_url, request)
-
-async def get_ping_time(ip):
-    proc = await asyncio.create_subprocess_exec(
-        'ping', '-c', '1', ip,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode == 0:
-        output = stdout.decode()
-        try:
-            ping_time = float(output.split('time=')[-1].split(' ')[0])
-            return ping_time
-        except (IndexError, ValueError):
-            return None
-    else:
+async def tcp_ping(ip, port=8000, timeout=1):
+    start_time = time.time()
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout)
+        elapsed_time = time.time() - start_time
+        writer.close()
+        await writer.wait_closed()
+        return elapsed_time
+    except Exception:
         return None
