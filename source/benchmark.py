@@ -6,38 +6,36 @@ from pydantic import BaseModel
 
 class QueryRequest(BaseModel):
     query: str
+    strategy: str = None  # Strategy is optional for write requests
 
-# Replace with the public IP address and port of your proxy instance
-PROXY_PUBLIC_IP = "3.89.116.77"  
-PROXY_PORT = 8000  # The port where the proxy's FastAPI app is running
-PROXY_BASE_URL = f"http://{PROXY_PUBLIC_IP}:{PROXY_PORT}"
+GATEKEEPER_PUBLIC_IP = "34.228.196.108"  
+GATEKEEPER_PORT = 8000  
+GATEKEEPER_BASE_URL = f"http://{GATEKEEPER_PUBLIC_IP}:{GATEKEEPER_PORT}"
 
-ENDPOINTS = ['/direct-hit', '/random', '/ping-based']
-
-async def send_request(client, endpoint, query):
-    url = f"{PROXY_BASE_URL}{endpoint}"
+async def send_request(client, endpoint, query, strategy=None):
+    url = f"{GATEKEEPER_BASE_URL}{endpoint}"
     request_payload = {"query": query}
+    if strategy:
+        request_payload["strategy"] = strategy
     try:
         response = await client.post(url, json=request_payload, timeout=10.0)
         response.raise_for_status()
         return True, response.elapsed.total_seconds()
     except httpx.RequestError as exc:
-        print(f"An error occurred while requesting {exc.request.url!r}: {exc}")
         return False, None
     except httpx.HTTPStatusError as exc:
-        print(f"HTTP error {exc.response.status_code} while requesting {exc.request.url!r}: {exc.response.text}")
         return False, None
 
-async def benchmark(endpoint, request_type, num_requests):
+async def benchmark(endpoint, request_type, num_requests, strategy=None):
     async with httpx.AsyncClient() as client:
         tasks = []
         for i in range(num_requests):
             if request_type == 'read':
                 query = f"SELECT * FROM actor LIMIT 1 OFFSET {i % 200};"
+                tasks.append(send_request(client, endpoint, query, strategy))
             else:  # write
                 query = f"INSERT INTO actor (first_name, last_name, last_update) VALUES ('Test{i}', 'User{i}', NOW());"
-            tasks.append(send_request(client, endpoint, query))
-
+                tasks.append(send_request(client, endpoint, query))
         start_time = time.perf_counter()
         results = await asyncio.gather(*tasks)
         end_time = time.perf_counter()
@@ -57,7 +55,7 @@ async def benchmark(endpoint, request_type, num_requests):
     else:
         min_time = max_time = avg_response_time = None
 
-    print(f"Benchmark Results for Endpoint {endpoint} ({request_type} requests):")
+    print(f"Benchmark Results ({request_type} requests):")
     print(f"Total Requests: {num_requests}")
     print(f"Successful Requests: {success_count}")
     print(f"Failed Requests: {failure_count}")
@@ -71,18 +69,22 @@ async def benchmark(endpoint, request_type, num_requests):
         print("No successful responses to calculate response times.")
 
 def main():
-    parser = argparse.ArgumentParser(description='Benchmark script for proxy.')
-    parser.add_argument('--endpoint', type=str, choices=['direct-hit', 'random', 'ping-based'], default='direct-hit',
-                        help='Proxy endpoint to test.')
+    parser = argparse.ArgumentParser(description='Benchmark script for Gatekeeper.')
+    parser.add_argument('--endpoint', type=str, default='/request',
+                        help='Gatekeeper endpoint to test (default: /request).')
     parser.add_argument('--request_type', type=str, choices=['read', 'write'], default='read',
                         help='Type of requests to send (read or write).')
-    parser.add_argument('--num_requests', type=int, default=1000,
+    parser.add_argument('--num_requests', type=int, default=100,
                         help='Number of requests to send.')
+    parser.add_argument('--strategy', type=str, choices=['direct-hit', 'random', 'ping-based'],
+                        help='Strategy to use for read requests (direct-hit, random, ping-based).')
     args = parser.parse_args()
 
-    endpoint = f"/{args.endpoint}"
-    asyncio.run(benchmark(endpoint, args.request_type, args.num_requests))
+    if args.request_type == 'read' and not args.strategy:
+        parser.error("--strategy is required for read requests.")
+
+    endpoint = args.endpoint
+    asyncio.run(benchmark(endpoint, args.request_type, args.num_requests, args.strategy))
 
 if __name__ == '__main__':
     main()
-

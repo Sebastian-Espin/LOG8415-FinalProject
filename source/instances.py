@@ -2,7 +2,7 @@ import boto3
 import os
 import paramiko
 import time
-from scripts import worker_script, update_manager_script, update_proxy_script
+from scripts import worker_script, update_manager_script, update_proxy_script, update_trusted_host_script, update_gatekeeper_script
 
 class EC2Manager:
     def __init__(self):
@@ -139,6 +139,34 @@ class EC2Manager:
         )
         proxy_instance[0].wait_until_running()
         proxy_instance[0].reload()
+
+        trusted_host_script = update_trusted_host_script(proxy_instance[0].public_ip_address)
+        trusted_host_instance = self.ec2.create_instances(
+            ImageId='ami-0e86e20dae9224db8',
+            MinCount=1,
+            MaxCount=1,
+            InstanceType='t2.large',
+            SecurityGroupIds=[security_group_id],
+            KeyName=self.key_pair_name,
+            UserData=trusted_host_script
+        )
+        trusted_host_instance[0].wait_until_running()
+        trusted_host_instance[0].reload()
+
+        gatekeeper_script = update_gatekeeper_script(trusted_host_instance[0].public_ip_address)
+        gatkeeper_instance = self.ec2.create_instances(
+            ImageId='ami-0e86e20dae9224db8',
+            MinCount=1,
+            MaxCount=1,
+            InstanceType='t2.large',
+            SecurityGroupIds=[security_group_id],
+            KeyName=self.key_pair_name,
+            UserData=gatekeeper_script
+        )
+        gatkeeper_instance[0].wait_until_running()
+        gatkeeper_instance[0].reload()
+        print(f"Gatekeeper instance created: {gatkeeper_instance[0].public_ip_address}")
+
     
     def create_security_group(self, vpc_id):
         response = self.ec2.create_security_group(

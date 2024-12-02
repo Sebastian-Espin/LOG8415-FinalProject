@@ -4,8 +4,15 @@ import random
 import httpx
 import asyncio
 import time
+import logging
 
 app = FastAPI()
+
+logging.basicConfig(
+    filename='/home/ubuntu/request_log.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 class QueryRequest(BaseModel):
     query: str
@@ -30,13 +37,16 @@ async def forward_request(url, request_data):
 async def direct_hit(request: QueryRequest):
     # Forward the request to the manager
     request_data = request.dict()
+    logging.info(f"Direct-Hit request: Forwarding to Manager at {MANAGER_IP}")
     return await forward_request(MANAGER_URL, request_data)
 
 @app.post("/random")
 async def random_query(request: QueryRequest):
     # Select a random worker
     worker_url = random.choice(WORKER_URLS)
+    worker_ip = worker_url.split('//')[1].split(':')[0]
     request_data = request.dict()
+    logging.info(f"Random request: Forwarding to Worker at {worker_ip}")
     return await forward_request(worker_url, request_data)
 
 @app.post("/ping-based")
@@ -51,8 +61,7 @@ async def ping_based_endpoint(request: QueryRequest):
             if result is not None:
                 ping_times[ip] = result
             else:
-                # Optionally log unreachable workers
-                pass  # You can add logging here
+                logging.warning(f"Worker {ip} is unreachable during ping")
         
         if not ping_times:
             raise HTTPException(status_code=503, detail="No reachable workers.")
@@ -63,7 +72,8 @@ async def ping_based_endpoint(request: QueryRequest):
         
         # Prepare the request data
         request_data = request.dict()
-        
+        logging.info(f"Ping-Based request: Forwarding to Worker at {best_worker_ip}")
+
         # Forward the request to the selected worker
         result = await forward_request(best_worker_url, request_data)
         return result
