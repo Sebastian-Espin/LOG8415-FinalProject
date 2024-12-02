@@ -27,7 +27,7 @@ async def process_request(request: QueryRequest):
     # Forward the request to the Proxy
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(proxy_url, json=request_data, timeout=10.0)
+            response = await client.post(proxy_url, json=request_data, timeout=1000.0)
             response.raise_for_status()
             return response.json()
     except httpx.RequestError as exc:

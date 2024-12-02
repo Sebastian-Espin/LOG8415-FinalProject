@@ -8,7 +8,7 @@ class QueryRequest(BaseModel):
     query: str
     strategy: str = None  # Strategy is optional for write requests
 
-GATEKEEPER_PUBLIC_IP = "34.228.196.108"  
+GATEKEEPER_PUBLIC_IP = "54.90.172.208"  
 GATEKEEPER_PORT = 8000  
 GATEKEEPER_BASE_URL = f"http://{GATEKEEPER_PUBLIC_IP}:{GATEKEEPER_PORT}"
 
@@ -18,7 +18,7 @@ async def send_request(client, endpoint, query, strategy=None):
     if strategy:
         request_payload["strategy"] = strategy
     try:
-        response = await client.post(url, json=request_payload, timeout=10.0)
+        response = await client.post(url, json=request_payload, timeout=1000.0)
         response.raise_for_status()
         return True, response.elapsed.total_seconds()
     except httpx.RequestError as exc:
@@ -31,11 +31,11 @@ async def benchmark(endpoint, request_type, num_requests, strategy=None):
         tasks = []
         for i in range(num_requests):
             if request_type == 'read':
-                query = f"SELECT * FROM actor LIMIT 1 OFFSET {i % 200};"
+                query = f"SELECT * FROM actor LIMIT 1 OFFSET {i % 100};"
                 tasks.append(send_request(client, endpoint, query, strategy))
             else:  # write
                 query = f"INSERT INTO actor (first_name, last_name, last_update) VALUES ('Test{i}', 'User{i}', NOW());"
-                tasks.append(send_request(client, endpoint, query))
+                tasks.append(send_request(client, endpoint, query, strategy))
         start_time = time.perf_counter()
         results = await asyncio.gather(*tasks)
         end_time = time.perf_counter()
@@ -70,14 +70,10 @@ async def benchmark(endpoint, request_type, num_requests, strategy=None):
 
 def main():
     parser = argparse.ArgumentParser(description='Benchmark script for Gatekeeper.')
-    parser.add_argument('--endpoint', type=str, default='/request',
-                        help='Gatekeeper endpoint to test (default: /request).')
-    parser.add_argument('--request_type', type=str, choices=['read', 'write'], default='read',
-                        help='Type of requests to send (read or write).')
-    parser.add_argument('--num_requests', type=int, default=100,
-                        help='Number of requests to send.')
-    parser.add_argument('--strategy', type=str, choices=['direct-hit', 'random', 'ping-based'],
-                        help='Strategy to use for read requests (direct-hit, random, ping-based).')
+    parser.add_argument('--endpoint', type=str, default='/request')
+    parser.add_argument('--request_type', type=str, choices=['read', 'write'], default='read')
+    parser.add_argument('--num_requests', type=int, default=100)
+    parser.add_argument('--strategy', type=str, choices=['direct-hit', 'random', 'ping-based'])
     args = parser.parse_args()
 
     if args.request_type == 'read' and not args.strategy:

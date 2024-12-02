@@ -14,7 +14,7 @@ TRUSTED_HOST_URL = f"http://{{TRUSTED_HOST_IP}}:8000/process"
 
 def validate_query(query: str) -> bool:
     # only certain SQL statements
-    pattern = re.compile(r"^\s*(SELECT|INSERT|UPDATE|DELETE|REPLACE|ALTER|CREATE|DROP|TRUNCATE)\s", re.IGNORECASE)
+    pattern = re.compile(r"^\s*(SELECT|INSERT|UPDATE)\s", re.IGNORECASE)
     return bool(pattern.match(query))
 
 @app.post("/request")
@@ -29,7 +29,7 @@ async def handle_request(request: QueryRequest):
     # Forward the request to the Trusted Host
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(TRUSTED_HOST_URL, json=request_data, timeout=10.0)
+            response = await client.post(TRUSTED_HOST_URL, json=request_data, timeout=1000.0)
             response.raise_for_status()
             return response.json()
     except httpx.RequestError as exc:

@@ -139,6 +139,7 @@ class EC2Manager:
         )
         proxy_instance[0].wait_until_running()
         proxy_instance[0].reload()
+        print(f"Proxy instance created: {proxy_instance[0].public_ip_address}")
 
         trusted_host_script = update_trusted_host_script(proxy_instance[0].public_ip_address)
         trusted_host_instance = self.ec2.create_instances(

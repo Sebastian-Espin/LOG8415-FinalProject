@@ -267,7 +267,7 @@ async def forward_write_query_to_workers(query):
 async def send_write_query_to_worker(client, url, query):
     request_payload = {{"query": query}}
     try:
-        response = await client.post(url, json=request_payload, timeout=10.0)
+        response = await client.post(url, json=request_payload, timeout=1000.0)
         response.raise_for_status()
         return response.json()
     except httpx.RequestError as exc:
@@ -287,6 +287,10 @@ def update_proxy_script(manager_ip, worker_ips):
     proxy_script = f'''#!/bin/bash
 sudo apt-get update && sudo apt-get upgrade -y
 sudo apt-get install -y python3 python3-pip python3-venv
+
+sudo touch /home/ubuntu/request_log.log
+sudo chmod 666 /home/ubuntu/request_log.log
+
 python3 -m venv /home/ubuntu/venv
 source /home/ubuntu/venv/bin/activate
 pip install fastapi uvicorn httpx
@@ -299,8 +303,15 @@ import random
 import httpx
 import asyncio
 import time
+import logging
 
 app = FastAPI()
+
+logging.basicConfig(
+    filename='/home/ubuntu/request_log.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 class QueryRequest(BaseModel):
     query: str
@@ -313,7 +324,7 @@ WORKER_URLS = [f"http://{{ip}}:8000/execute" for ip in WORKER_NODES]
 async def forward_request(url, request_data):
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=request_data, timeout=10.0)
+            response = await client.post(url, json=request_data, timeout=1000.0)
             response.raise_for_status()
             return response.json()
     except httpx.RequestError as exc:
@@ -325,13 +336,16 @@ async def forward_request(url, request_data):
 async def direct_hit(request: QueryRequest):
     # Forward the request to the manager
     request_data = request.dict()
+    logging.info(f"Direct-Hit request: Forwarding to Manager at {{MANAGER_IP}}")
     return await forward_request(MANAGER_URL, request_data)
 
 @app.post("/random")
 async def random_query(request: QueryRequest):
     # Select a random worker
     worker_url = random.choice(WORKER_URLS)
+    worker_ip = worker_url.split('//')[1].split(':')[0]
     request_data = request.dict()
+    logging.info(f"Random request: Forwarding to Worker at {{worker_ip}}")
     return await forward_request(worker_url, request_data)
 
 @app.post("/ping-based")
@@ -346,8 +360,7 @@ async def ping_based_endpoint(request: QueryRequest):
             if result is not None:
                 ping_times[ip] = result
             else:
-                # Optionally log unreachable workers
-                pass  # You can add logging here
+                logging.warning(f"Worker {{ip}} is unreachable during ping")
         
         if not ping_times:
             raise HTTPException(status_code=503, detail="No reachable workers.")
@@ -358,7 +371,8 @@ async def ping_based_endpoint(request: QueryRequest):
         
         # Prepare the request data
         request_data = request.dict()
-        
+        logging.info(f"Ping-Based request: Forwarding to Worker at {{best_worker_ip}}")
+
         # Forward the request to the selected worker
         result = await forward_request(best_worker_url, request_data)
         return result
@@ -424,7 +438,7 @@ async def process_request(request: QueryRequest):
     # Forward the request to the Proxy
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(proxy_url, json=request_data, timeout=10.0)
+            response = await client.post(proxy_url, json=request_data, timeout=1000.0)
             response.raise_for_status()
             return response.json()
     except httpx.RequestError as exc:
@@ -481,7 +495,7 @@ async def handle_request(request: QueryRequest):
     # Forward the request to the Trusted Host
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(TRUSTED_HOST_URL, json=request_data, timeout=10.0)
+            response = await client.post(TRUSTED_HOST_URL, json=request_data, timeout=1000.0)
             response.raise_for_status()
             return response.json()
     except httpx.RequestError as exc:

@@ -97,7 +97,7 @@ async def forward_write_query_to_workers(query):
 async def send_write_query_to_worker(client, url, query):
     request_payload = {{"query": query}}
     try:
-        response = await client.post(url, json=request_payload, timeout=10.0)
+        response = await client.post(url, json=request_payload, timeout=1000.0)
         response.raise_for_status()
         return response.json()
     except httpx.RequestError as exc:

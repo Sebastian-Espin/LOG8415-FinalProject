@@ -25,7 +25,7 @@ WORKER_URLS = [f"http://{{ip}}:8000/execute" for ip in WORKER_NODES]
 async def forward_request(url, request_data):
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=request_data, timeout=10.0)
+            response = await client.post(url, json=request_data, timeout=1000.0)
             response.raise_for_status()
             return response.json()
     except httpx.RequestError as exc:
@@ -37,7 +37,7 @@ async def forward_request(url, request_data):
 async def direct_hit(request: QueryRequest):
     # Forward the request to the manager
     request_data = request.dict()
-    logging.info(f"Direct-Hit request: Forwarding to Manager at {MANAGER_IP}")
+    logging.info(f"Direct-Hit request: Forwarding to Manager at {{MANAGER_IP}}")
     return await forward_request(MANAGER_URL, request_data)
 
 @app.post("/random")
@@ -46,7 +46,7 @@ async def random_query(request: QueryRequest):
     worker_url = random.choice(WORKER_URLS)
     worker_ip = worker_url.split('//')[1].split(':')[0]
     request_data = request.dict()
-    logging.info(f"Random request: Forwarding to Worker at {worker_ip}")
+    logging.info(f"Random request: Forwarding to Worker at {{worker_ip}}")
     return await forward_request(worker_url, request_data)
 
 @app.post("/ping-based")
@@ -61,7 +61,7 @@ async def ping_based_endpoint(request: QueryRequest):
             if result is not None:
                 ping_times[ip] = result
             else:
-                logging.warning(f"Worker {ip} is unreachable during ping")
+                logging.warning(f"Worker {{ip}} is unreachable during ping")
         
         if not ping_times:
             raise HTTPException(status_code=503, detail="No reachable workers.")
@@ -72,7 +72,7 @@ async def ping_based_endpoint(request: QueryRequest):
         
         # Prepare the request data
         request_data = request.dict()
-        logging.info(f"Ping-Based request: Forwarding to Worker at {best_worker_ip}")
+        logging.info(f"Ping-Based request: Forwarding to Worker at {{best_worker_ip}}")
 
         # Forward the request to the selected worker
         result = await forward_request(best_worker_url, request_data)
