@@ -3,7 +3,10 @@ import os
 import paramiko
 import time
 import socket
+import asyncio
 from scripts import worker_script, update_manager_script, update_proxy_script, update_trusted_host_script, update_gatekeeper_script
+from benchmark import benchmark
+from data_visualization import visualize_data
 
 class EC2Manager:
     def __init__(self):
@@ -15,6 +18,8 @@ class EC2Manager:
         self.proxy_instance = []
         self.gatekeeper_instance = []
         self.trusted_host_instance = []
+        self.manager_instance = []
+        self.worker_instances = []
 
     def create_key_pair(self):
         try:
@@ -87,7 +92,7 @@ class EC2Manager:
         scp.close()
 
     def launch_instances(self, security_group_id):
-        workers = self.ec2.create_instances(
+        self.worker_instances = self.ec2.create_instances(
             ImageId='ami-0e86e20dae9224db8',
             MinCount=2,
             MaxCount=2,
@@ -100,11 +105,11 @@ class EC2Manager:
             ]
         )
 
-        for worker in workers:
+        for worker in self.worker_instances:
             worker.wait_until_running()
             worker.reload()
-        manager_script = update_manager_script([worker.public_ip_address for worker in workers])
-        manager = self.ec2.create_instances(
+        manager_script = update_manager_script([worker.public_ip_address for worker in self.worker_instances])
+        self.manager_instance = self.ec2.create_instances(
                     ImageId='ami-0e86e20dae9224db8',
                     MinCount=1,
                     MaxCount=1,
@@ -116,16 +121,16 @@ class EC2Manager:
                     {'ResourceType': 'instance', 'Tags': [{'Key': 'Role', 'Value': 'Manager'}]}
                     ]
                 )
-        for instance in manager:
+        for instance in self.manager_instance:
             instance.wait_until_running()
             instance.reload()
             
-        print(manager[0].public_ip_address)
+        print(self.manager_instance[0].public_ip_address)
         print('Workers and Manager instances created, lauunching proxy and gatekeeper')
-        self.launch_proxy_and_gatekeeper(security_group_id, manager[0].public_ip_address, [worker.public_ip_address for worker in workers])
+        self.launch_proxy_and_gatekeeper(security_group_id, self.manager_instance[0].public_ip_address, [worker.public_ip_address for worker in self.worker_instances])
         
         print('Proxy and gatekeeper launched, waiting for user data execution')
-        instances = workers + manager
+        instances = self.worker_instances + self.manager_instance
         for instance in instances:
             self.wait_for_userdata_execution(instance.public_ip_address, f"{self.key_pair_name}.pem")           
 
@@ -187,7 +192,7 @@ class EC2Manager:
             'sudo iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT',
             'sudo iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED -j ACCEPT',
 
-            # Allow traffic from Gatekeeper on port 8000
+            # Allow traffic from Gatekeeper and proxy on port 8000
             f'sudo iptables -A INPUT -p tcp -s {gatekeeper_ip} --dport 8000 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT',
             f'sudo iptables -A OUTPUT -p tcp -d {proxy_ip} --dport 8000 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT',
 
@@ -294,6 +299,59 @@ class EC2Manager:
                 
         self.delete_key_pair()
 
+    def run_benchmark(self):
+        endpoint = '/request'
+        gatekeeper_ip = self.gatekeeper_instance[0].public_ip_address
+        asyncio.run(benchmark(gatekeeper_ip, endpoint, 'read', 1000, 'direct-hit'))
+        asyncio.run(benchmark(gatekeeper_ip, endpoint, 'read', 1000, 'random'))
+        asyncio.run(benchmark(gatekeeper_ip, endpoint, 'read', 1000, 'ping-based'))
+        asyncio.run(benchmark(gatekeeper_ip, endpoint, 'write', 1000, 'direct-hit'))
+
+    def get_proxy_files(self, key_file):
+        self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            self.ssh.connect(self.proxy_instance[0].public_ip_address, username="ubuntu", key_filename=key_file)
+            scp = paramiko.SFTPClient.from_transport(self.ssh.get_transport())
+            scp.get('/home/ubuntu/request_log.log','./source/data/proxy_output.txt')
+            scp.close()
+        except Exception as e:
+            print(f"An error occurred: {e}")
+        finally:
+            self.ssh.close()
+            print(f"Connection to {self.proxy_instance[0].public_ip_address} closed.")
+
+    def get_manager_files(self, key_file):
+        self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            self.ssh.connect(self.manager_instance[0].public_ip_address, username="ubuntu", key_filename=key_file)
+            scp = paramiko.SFTPClient.from_transport(self.ssh.get_transport())
+            scp.get('/home/ubuntu/request_log.log','./source/data/manager_output.txt')
+            scp.close()
+        except Exception as e:
+            print(f"An error occurred: {e}")
+        finally:
+            self.ssh.close()
+            print(f"Connection to {self.manager_instance[0].public_ip_address} closed.")
+
+    def get_workers_files(self, key_file):
+        self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        for worker in self.worker_instances:
+            try:
+                self.ssh.connect(worker.public_ip_address, username="ubuntu", key_filename=key_file)
+                scp = paramiko.SFTPClient.from_transport(self.ssh.get_transport())
+                scp.get('/home/ubuntu/request_log.log',f'./source/data/worker_output_{worker.public_ip_address.replace(".", "_")}.txt')
+                scp.close()
+            except Exception as e:
+                print(f"An error occurred: {e}")
+            finally:
+                self.ssh.close()
+                print(f"Connection to {worker.public_ip_address} closed.")
+    
+    def get_log_files(self, key_file):
+        self.get_proxy_files(key_file)
+        self.get_manager_files(key_file)
+        self.get_workers_files(key_file)
+
 def main():
     ec2_manager = EC2Manager()
     ec2_manager.create_key_pair()
@@ -304,6 +362,9 @@ def main():
                                              f"{ec2_manager.key_pair_name}.pem",
                                              ec2_manager.gatekeeper_instance[0].public_ip_address, 
                                              ec2_manager.proxy_instance[0].public_ip_address)
+    ec2_manager.run_benchmark()
+    ec2_manager.get_log_files(f"{ec2_manager.key_pair_name}.pem")
+    visualize_data()
     ec2_manager.cleanup_resources()
 
 if __name__ == "__main__":
