@@ -8,7 +8,7 @@ class QueryRequest(BaseModel):
     query: str
     strategy: str = None  # Strategy is optional for write requests
 
-GATEKEEPER_PUBLIC_IP = "54.90.172.208"  
+GATEKEEPER_PUBLIC_IP = "34.228.78.39"  
 GATEKEEPER_PORT = 8000  
 GATEKEEPER_BASE_URL = f"http://{GATEKEEPER_PUBLIC_IP}:{GATEKEEPER_PORT}"
 

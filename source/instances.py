@@ -2,6 +2,7 @@ import boto3
 import os
 import paramiko
 import time
+import socket
 from scripts import worker_script, update_manager_script, update_proxy_script, update_trusted_host_script, update_gatekeeper_script
 
 class EC2Manager:
@@ -11,6 +12,9 @@ class EC2Manager:
         self.key_pair_name = 'my_key_pair'
         self.userData_template = worker_script
         self.ssh = paramiko.SSHClient()
+        self.proxy_instance = []
+        self.gatekeeper_instance = []
+        self.trusted_host_instance = []
 
     def create_key_pair(self):
         try:
@@ -128,7 +132,7 @@ class EC2Manager:
 
     def launch_proxy_and_gatekeeper(self, security_group_id, manager_ip, workers_ips):
         proxy_script = update_proxy_script(manager_ip, workers_ips)
-        proxy_instance = self.ec2.create_instances(
+        self.proxy_instance = self.ec2.create_instances(
             ImageId='ami-0e86e20dae9224db8',
             MinCount=1,
             MaxCount=1,
@@ -137,12 +141,12 @@ class EC2Manager:
             KeyName=self.key_pair_name,
             UserData=proxy_script
         )
-        proxy_instance[0].wait_until_running()
-        proxy_instance[0].reload()
-        print(f"Proxy instance created: {proxy_instance[0].public_ip_address}")
+        self.proxy_instance[0].wait_until_running()
+        self.proxy_instance[0].reload()
+        print(f"Proxy instance created: {self.proxy_instance[0].public_ip_address}")
 
-        trusted_host_script = update_trusted_host_script(proxy_instance[0].public_ip_address)
-        trusted_host_instance = self.ec2.create_instances(
+        trusted_host_script = update_trusted_host_script(self.proxy_instance[0].public_ip_address)
+        self.trusted_host_instance = self.ec2.create_instances(
             ImageId='ami-0e86e20dae9224db8',
             MinCount=1,
             MaxCount=1,
@@ -151,11 +155,11 @@ class EC2Manager:
             KeyName=self.key_pair_name,
             UserData=trusted_host_script
         )
-        trusted_host_instance[0].wait_until_running()
-        trusted_host_instance[0].reload()
+        self.trusted_host_instance[0].wait_until_running()
+        self.trusted_host_instance[0].reload()
 
-        gatekeeper_script = update_gatekeeper_script(trusted_host_instance[0].public_ip_address)
-        gatkeeper_instance = self.ec2.create_instances(
+        gatekeeper_script = update_gatekeeper_script(self.trusted_host_instance[0].public_ip_address)
+        self.gatekeeper_instance = self.ec2.create_instances(
             ImageId='ami-0e86e20dae9224db8',
             MinCount=1,
             MaxCount=1,
@@ -164,11 +168,71 @@ class EC2Manager:
             KeyName=self.key_pair_name,
             UserData=gatekeeper_script
         )
-        gatkeeper_instance[0].wait_until_running()
-        gatkeeper_instance[0].reload()
-        print(f"Gatekeeper instance created: {gatkeeper_instance[0].public_ip_address}")
+        self.gatekeeper_instance[0].wait_until_running()
+        self.gatekeeper_instance[0].reload()
+        print(f"Gatekeeper instance created: {self.gatekeeper_instance[0].public_ip_address}")
 
-    
+
+    def change_trusted_host_ip_table(self, instance_ip, key_file, gatekeeper_ip, proxy_ip):
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        local_ip = self.get_public_ip_socket()
+
+        commands = [
+            # Flush existing iptables rules
+            'sudo iptables -F',
+            'sudo iptables -X',
+
+            # Allow established connections
+            'sudo iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT',
+            'sudo iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED -j ACCEPT',
+
+            # Allow traffic from Gatekeeper on port 8000
+            f'sudo iptables -A INPUT -p tcp -s {gatekeeper_ip} --dport 8000 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT',
+            f'sudo iptables -A OUTPUT -p tcp -d {proxy_ip} --dport 8000 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT',
+
+            f'sudo iptables -A INPUT -p tcp -s {local_ip} --dport 22 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT',
+            f'sudo iptables -A OUTPUT -p tcp --sport 22 -d {local_ip} -m conntrack --ctstate ESTABLISHED -j ACCEPT',
+
+            # Save iptables rules
+            'sudo sh -c "iptables-save > /etc/iptables.rules"',
+        ]
+
+        try:
+            # Connect to the instance
+            ssh.connect(instance_ip, username="ubuntu", key_filename=key_file, timeout=10)
+            print(f"Successfully connected to {instance_ip}")
+
+            for command in commands:
+                print(f"Executing: {command}")
+                stdin, stdout, stderr = ssh.exec_command(command, get_pty=True)
+                # Wait for the command to complete
+                exit_status = stdout.channel.recv_exit_status()
+                output = stdout.read().decode()
+                error = stderr.read().decode()
+
+                if exit_status == 0:
+                    print(f"Output:\n{output}")
+                else:
+                    print(f"Error (Exit Status {exit_status}):\n{error}")
+
+        except Exception as e:
+            print(f"An error occurred: {e}")
+        finally:
+            ssh.close()
+            print(f"Connection to {instance_ip} closed.")
+
+    def get_public_ip_socket(self):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(('8.8.8.8', 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception as e:
+            print(f"Error retrieving IP using socket: {e}")
+            return None
+        
     def create_security_group(self, vpc_id):
         response = self.ec2.create_security_group(
             GroupName='my-security-group',
@@ -236,6 +300,10 @@ def main():
     vpc_id = ec2_manager.ec2_client.describe_vpcs()["Vpcs"][0]['VpcId']
     security_group = ec2_manager.create_security_group(vpc_id)
     ec2_manager.launch_instances(security_group)
+    ec2_manager.change_trusted_host_ip_table(ec2_manager.trusted_host_instance[0].public_ip_address,
+                                             f"{ec2_manager.key_pair_name}.pem",
+                                             ec2_manager.gatekeeper_instance[0].public_ip_address, 
+                                             ec2_manager.proxy_instance[0].public_ip_address)
     ec2_manager.cleanup_resources()
 
 if __name__ == "__main__":
